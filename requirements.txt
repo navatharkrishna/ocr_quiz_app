@@ -1,6 +1,6 @@
 streamlit==1.39.0
 pandas==2.2.3
 PyMuPDF==1.24.9
-openai>=1.42.0
+openai==0.28.0
 PyGithub==2.4.0
 requests>=2.32.0
