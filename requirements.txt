@@ -1,9 +1,9 @@
 streamlit==1.29.0
-pytesseract==0.5.3
-PyMuPDF==1.22.5
-opencv-python-headless==4.12.0.88
-numpy==1.26.4
-Pillow==11.3.0
-pandas==2.3.3
+pillow==10.0.0
+pytesseract==0.4.2
+PyMuPDF==1.23.6
+opencv-python-headless==4.8.1.78
+numpy==1.27.5
+pandas==2.1.1
 openai==0.28.0
 PyGithub==1.58.1
