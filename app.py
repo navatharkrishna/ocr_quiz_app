@@ -1,24 +1,20 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import pytesseract
-from PIL import Image
-import numpy as np
 import openai
 import pandas as pd
 import json
 from github import Github
 import os
-import io
 
 # -------------------------
 # Streamlit UI
 # -------------------------
 st.set_page_config(page_title="OCR Quiz Extractor", layout="wide")
-st.title("📘 Marathi + English OCR Quiz Extractor & GitHub Uploader")
+st.title("📘 Marathi + English PDF Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
 Upload a **PDF file** (Marathi or English), this app will:
-1. Extract text using OCR (PyMuPDF + Tesseract)
+1. Extract text directly from PDF (fast, no Tesseract needed)
 2. Send text to GPT for cleaning & question formatting
 3. Generate a CSV file in the desired format
 4. Automatically push the CSV to your GitHub repo
@@ -50,13 +46,13 @@ if uploaded_pdf is None:
 # -------------------------
 output_dir = "output"
 os.makedirs(output_dir, exist_ok=True)
-text_file_path = os.path.join(output_dir, "ocr_output.txt")
+text_file_path = os.path.join(output_dir, "pdf_text_output.txt")
 csv_file_path = os.path.join(output_dir, "quiz.csv")
 
 # -------------------------
-# Step 1: OCR PDF → Extract text
+# Step 1: Extract text from PDF (no Tesseract)
 # -------------------------
-st.info("🔍 Running OCR using PyMuPDF + Tesseract... Please wait.")
+st.info("🔍 Extracting text from PDF... Please wait.")
 try:
     doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
 except Exception as e:
@@ -65,22 +61,19 @@ except Exception as e:
 
 output_text = ""
 for page_num, page in enumerate(doc):
-    pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))  # reduced resolution for speed
-    img_bytes = pix.tobytes("ppm")
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-    try:
-        text = pytesseract.image_to_string(img, lang="eng+mar")
+    text = page.get_text()
+    if text.strip():
         output_text += f"\n--- Page {page_num + 1} ---\n{text}\n"
-    except Exception as e:
-        st.warning(f"⚠️ OCR failed on page {page_num+1}: {e}")
+    else:
+        output_text += f"\n--- Page {page_num + 1} ---\n[No text detected, possibly an image]\n"
 
 with open(text_file_path, "w", encoding="utf-8") as f:
     f.write(output_text)
 
-st.success("✅ OCR completed!")
+st.success("✅ Text extraction completed!")
 
 # -------------------------
-# Step 2: Send OCR text to GPT
+# Step 2: Send extracted text to GPT
 # -------------------------
 st.info("🤖 Formatting text using GPT...")
 
@@ -91,7 +84,7 @@ formatted_questions = []
 for i, chunk in enumerate(chunks):
     st.write(f"Processing chunk {i+1} of {len(chunks)}...")
     prompt = """
-You are given OCR-extracted quiz questions in Marathi and English.
+You are given PDF-extracted quiz questions in Marathi and English.
 Correct spelling/formatting and structure them in this JSON format:
 
 [
@@ -152,7 +145,7 @@ if formatted_questions:
         contents = repo.get_contents(github_path)
         repo.update_file(
             path=contents.path,
-            message="Update quiz.csv via Streamlit OCR app",
+            message="Update quiz.csv via Streamlit PDF app",
             content=csv_content,
             sha=contents.sha,
             branch="main"
@@ -161,10 +154,10 @@ if formatted_questions:
     except Exception:
         repo.create_file(
             path=github_path,
-            message="Create quiz.csv via Streamlit OCR app",
+            message="Create quiz.csv via Streamlit PDF app",
             content=csv_content,
             branch="main"
         )
         st.success(f"✅ CSV created at GitHub: {repo.html_url}/blob/main/{github_path}")
 else:
-    st.error("❌ No valid formatted data found. Check OCR output.")
+    st.error("❌ No valid formatted data found. Check extracted text.")
