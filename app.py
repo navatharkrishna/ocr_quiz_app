@@ -24,7 +24,7 @@ Upload a **PDF file** (Marathi or English), this app will:
 """)
 
 # -------------------------
-# Fetch sensitive info from Streamlit secrets
+# Fetch secrets
 # -------------------------
 try:
     api_key = st.secrets["OPENAI_API_KEY"]
@@ -32,7 +32,7 @@ try:
     repo_name = st.secrets["MY_GH_REPO"]
     github_path = st.secrets["MY_GH_PATH"]
 except KeyError:
-    st.error("❌ One or more secrets are missing! Please set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH in Streamlit secrets.")
+    st.error("❌ Missing secrets! Set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH in Streamlit secrets.")
     st.stop()
 
 openai.api_key = api_key
@@ -53,10 +53,9 @@ text_file_path = os.path.join(output_dir, "ocr_output.txt")
 csv_file_path = os.path.join(output_dir, "quiz.csv")
 
 # -------------------------
-# Step 1: OCR PDF → Extract text using EasyOCR
+# Step 1: OCR PDF → Extract text
 # -------------------------
 st.info("🔍 Running OCR using EasyOCR... Please wait.")
-
 try:
     doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
 except Exception as e:
@@ -64,8 +63,8 @@ except Exception as e:
     st.stop()
 
 reader = easyocr.Reader(['en', 'mr'], gpu=False)  # CPU mode
-
 output_text = ""
+
 for page_num, page in enumerate(doc):
     pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
     img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
@@ -128,7 +127,7 @@ Return only JSON array, no extra text.
                 {"role": "user", "content": prompt + "\n\nText:\n" + chunk}
             ]
         )
-        formatted_questions += json.loads(response.choices[0].message.content)
+        formatted_questions += json.loads(response.choices[0].message.content.strip())
     except Exception as e:
         st.warning(f"⚠️ GPT/JSON error in chunk {i+1}: {e}")
 
@@ -157,12 +156,13 @@ if formatted_questions:
     g = Github(github_token)
     repo = g.get_repo(repo_name)
 
+    csv_content = df.to_csv(index=False, encoding="utf-8-sig")
     try:
         contents = repo.get_contents(github_path)
         repo.update_file(
             path=contents.path,
             message="Update quiz.csv via Streamlit OCR app",
-            content=df.to_csv(index=False, encoding="utf-8-sig"),
+            content=csv_content,
             sha=contents.sha,
             branch="main"
         )
@@ -171,7 +171,7 @@ if formatted_questions:
         repo.create_file(
             path=github_path,
             message="Create quiz.csv via Streamlit OCR app",
-            content=df.to_csv(index=False, encoding="utf-8-sig"),
+            content=csv_content,
             branch="main"
         )
         st.success(f"✅ CSV created at GitHub: {repo.html_url}/blob/main/{github_path}")
