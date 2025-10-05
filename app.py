@@ -1,13 +1,11 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import easyocr
-import cv2
-import numpy as np
-import openai
+from PIL import Image
+import pytesseract
 import pandas as pd
 import json
-from github import Github
 import os
+from github import Github
 
 # -------------------------
 # Streamlit UI
@@ -17,7 +15,7 @@ st.title("📘 Marathi + English OCR Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
 Upload a **PDF file** (Marathi or English), this app will:
-1. Extract text using OCR (EasyOCR)
+1. Extract text using OCR (Tesseract)
 2. Send text to GPT for cleaning & question formatting
 3. Generate a CSV file in the desired format
 4. Automatically push the CSV to your GitHub repo
@@ -35,6 +33,7 @@ except KeyError:
     st.error("❌ Missing secrets! Set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH in Streamlit secrets.")
     st.stop()
 
+import openai
 openai.api_key = api_key
 
 # -------------------------
@@ -55,30 +54,31 @@ csv_file_path = os.path.join(output_dir, "quiz.csv")
 # -------------------------
 # Step 1: OCR PDF → Extract text
 # -------------------------
-st.info("🔍 Running OCR using EasyOCR... Please wait.")
+st.info("🔍 Running OCR using Tesseract... Please wait.")
+
 try:
     doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
 except Exception as e:
     st.error(f"❌ Failed to open PDF: {e}")
     st.stop()
 
-reader = easyocr.Reader(['en', 'mr'], gpu=False)  # CPU mode
 output_text = ""
 
 for page_num, page in enumerate(doc):
-    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
-    if pix.n == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    rgb_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # High-res image
+    img_path = f"temp_page_{page_num}.png"
+    pix.save(img_path)
 
     try:
-        result = reader.readtext(rgb_img, detail=0)
-        page_text = "\n".join(result)
-        output_text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
+        text = pytesseract.image_to_string(
+            Image.open(img_path),
+            lang="eng+mar"  # English + Marathi
+        )
+        output_text += f"\n--- Page {page_num + 1} ---\n{text}\n"
     except Exception as e:
         st.warning(f"⚠️ OCR failed on page {page_num+1}: {e}")
+
+    os.remove(img_path)
 
 with open(text_file_path, "w", encoding="utf-8") as f:
     f.write(output_text)
