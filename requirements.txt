@@ -1,9 +1,10 @@
 streamlit
-pymupdf
+easyocr
+opencv-python-headless
 pillow
 pytesseract
-opencv-python-headless
+PyMuPDF
 numpy
-openai
 pandas
+openai
 PyGithub
