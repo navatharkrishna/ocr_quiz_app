@@ -2,7 +2,7 @@ import streamlit as st
 import fitz  # PyMuPDF
 from PIL import Image
 import pytesseract
-import cv2
+import cv2  # Make sure opencv-python-headless is installed in requirements.txt
 import numpy as np
 import openai
 import pandas as pd
@@ -33,7 +33,8 @@ repo_name = os.getenv("MY_GH_REPO")
 github_path = os.getenv("MY_GH_PATH")
 
 if not all([api_key, github_token, repo_name, github_path]):
-    st.error("❌ One or more environment variables are missing! Please set OPENAI_API_KEY, GITHUB_TOKEN, GITHUB_REPO, GITHUB_PATH.")
+    st.error("❌ One or more environment variables are missing! "
+             "Please set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH.")
     st.stop()
 
 openai.api_key = api_key
@@ -57,7 +58,13 @@ csv_file_path = os.path.join(output_dir, "quiz.csv")
 # Step 1: OCR PDF → Extract text
 # -------------------------
 st.info("🔍 Running OCR... Please wait.")
-doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
+
+try:
+    doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
+except Exception as e:
+    st.error(f"❌ Failed to open PDF: {e}")
+    st.stop()
+
 output_text = ""
 
 for page_num in range(len(doc)):
@@ -119,18 +126,17 @@ Correct spelling/formatting and structure them in this JSON format:
 Return only JSON array, no extra text.
 """
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4o-mini",  # or gpt-5-mini
-        messages=[
-            {"role": "system", "content": "You are a helpful assistant that structures quiz questions."},
-            {"role": "user", "content": prompt + "\n\nText:\n" + chunk}
-        ]
-    )
-
     try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",  # or gpt-5-mini
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that structures quiz questions."},
+                {"role": "user", "content": prompt + "\n\nText:\n" + chunk}
+            ]
+        )
         formatted_questions += json.loads(response.choices[0].message.content)
     except Exception as e:
-        st.warning(f"⚠️ JSON parsing error in chunk {i+1}: {e}")
+        st.warning(f"⚠️ GPT/JSON error in chunk {i+1}: {e}")
 
 # -------------------------
 # Step 3: Convert JSON → CSV
@@ -167,10 +173,21 @@ if formatted_questions:
 
     try:
         contents = repo.get_contents(github_path)
-        repo.update_file(contents.path, "Update quiz.csv via Streamlit OCR app", df.to_csv(index=False, encoding="utf-8-sig"), contents.sha, branch="main")
+        repo.update_file(
+            path=contents.path,
+            message="Update quiz.csv via Streamlit OCR app",
+            content=df.to_csv(index=False, encoding="utf-8-sig"),
+            sha=contents.sha,
+            branch="main"
+        )
         st.success(f"✅ CSV updated at GitHub: {repo.html_url}/blob/main/{github_path}")
     except Exception:
-        repo.create_file(github_path, "Create quiz.csv via Streamlit OCR app", df.to_csv(index=False, encoding="utf-8-sig"), branch="main")
+        repo.create_file(
+            path=github_path,
+            message="Create quiz.csv via Streamlit OCR app",
+            content=df.to_csv(index=False, encoding="utf-8-sig"),
+            branch="main"
+        )
         st.success(f"✅ CSV created at GitHub: {repo.html_url}/blob/main/{github_path}")
 else:
     st.error("❌ No valid formatted data found. Check OCR output.")
