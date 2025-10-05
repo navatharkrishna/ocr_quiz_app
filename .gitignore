@@ -1,0 +1,50 @@
+# -----------------------------
+# Python cache files
+# -----------------------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# -----------------------------
+# Virtual environment
+# -----------------------------
+venv/
+.env/
+.env.*
+
+# -----------------------------
+# Output / temporary files
+# -----------------------------
+output/
+*.csv
+*.txt
+*.json
+*.xlsx
+
+# -----------------------------
+# Jupyter / IPython
+# -----------------------------
+.ipynb_checkpoints/
+
+# -----------------------------
+# System files
+# -----------------------------
+.DS_Store
+Thumbs.db
+
+# -----------------------------
+# IDE / Editor settings
+# -----------------------------
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# -----------------------------
+# Secrets / API keys
+# -----------------------------
+*.key
+*.pem
+*.crt
