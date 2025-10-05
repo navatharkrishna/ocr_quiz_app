@@ -3,8 +3,10 @@ import fitz  # PyMuPDF
 import openai
 import pandas as pd
 import json
-from github import Github
 import os
+import requests
+import base64
+import time
 
 # -------------------------
 # Streamlit UI
@@ -50,7 +52,7 @@ text_file_path = os.path.join(output_dir, "pdf_text_output.txt")
 csv_file_path = os.path.join(output_dir, "quiz.csv")
 
 # -------------------------
-# Step 1: Extract text from PDF (no Tesseract)
+# Step 1: Extract text from PDF
 # -------------------------
 st.info("🔍 Extracting text from PDF... Please wait.")
 try:
@@ -77,18 +79,16 @@ st.success("✅ Text extraction completed!")
 # -------------------------
 st.info("🤖 Formatting text using GPT...")
 
-max_chunk_size = 3000
+max_chunk_size = 1500  # smaller chunks
 chunks = [output_text[i:i + max_chunk_size] for i in range(0, len(output_text), max_chunk_size)]
 formatted_questions = []
 
-for i, chunk in enumerate(chunks):
-    st.write(f"Processing chunk {i+1} of {len(chunks)}...")
-    prompt = """
+prompt_template = """
 You are given PDF-extracted quiz questions in Marathi and English.
 Correct spelling/formatting and structure them in this JSON format:
 
 [
-  {
+  {{
     "question_no": 1,
     "question": "Corrected question text",
     "option1": "Option A text",
@@ -98,22 +98,39 @@ Correct spelling/formatting and structure them in this JSON format:
     "correct_answer": "Correct answer or option number",
     "description": "Explanation if available",
     "reference": "Source / reference if available"
-  }
+  }}
 ]
 
 Return only JSON array, no extra text.
 """
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant that structures quiz questions."},
-                {"role": "user", "content": prompt + "\n\nText:\n" + chunk}
-            ]
-        )
-        formatted_questions += json.loads(response.choices[0].message.content.strip())
-    except Exception as e:
-        st.warning(f"⚠️ GPT/JSON error in chunk {i+1}: {e}")
+
+for i, chunk in enumerate(chunks):
+    st.write(f"Processing chunk {i+1} of {len(chunks)}...")
+    for attempt in range(3):  # retry 3 times
+        try:
+            response = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that structures quiz questions."},
+                    {"role": "user", "content": prompt_template + "\n\nText:\n" + chunk}
+                ]
+            )
+            content = response.choices[0].message.content.strip()
+            if content:
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, list):
+                        formatted_questions += data
+                    else:
+                        st.warning(f"⚠️ Chunk {i+1} returned invalid JSON (not a list). Skipping.")
+                except json.JSONDecodeError:
+                    st.warning(f"⚠️ Chunk {i+1} JSON parsing error. Content:\n{content}")
+            else:
+                st.warning(f"⚠️ Chunk {i+1} returned empty response.")
+            break  # exit retry loop if successful
+        except Exception as e:
+            st.warning(f"⚠️ GPT API error in chunk {i+1}, attempt {attempt+1}: {e}")
+            time.sleep(2)  # wait before retry
 
 # -------------------------
 # Step 3: Convert JSON → CSV
@@ -134,30 +151,34 @@ if formatted_questions:
         st.download_button(label="📥 Download CSV", data=f, file_name="quiz.csv", mime="text/csv")
 
     # -------------------------
-    # Step 4: Upload CSV to GitHub
+    # Step 4: Upload CSV to GitHub via requests
     # -------------------------
     st.info("⬆️ Uploading CSV to GitHub...")
-    g = Github(github_token)
-    repo = g.get_repo(repo_name)
+    url = f"https://api.github.com/repos/{repo_name}/contents/{github_path}"
+    headers = {"Authorization": f"token {github_token}"}
 
-    csv_content = df.to_csv(index=False, encoding="utf-8-sig")
-    try:
-        contents = repo.get_contents(github_path)
-        repo.update_file(
-            path=contents.path,
-            message="Update quiz.csv via Streamlit PDF app",
-            content=csv_content,
-            sha=contents.sha,
-            branch="main"
-        )
-        st.success(f"✅ CSV updated at GitHub: {repo.html_url}/blob/main/{github_path}")
-    except Exception:
-        repo.create_file(
-            path=github_path,
-            message="Create quiz.csv via Streamlit PDF app",
-            content=csv_content,
-            branch="main"
-        )
-        st.success(f"✅ CSV created at GitHub: {repo.html_url}/blob/main/{github_path}")
+    # Check if file exists
+    r = requests.get(url, headers=headers)
+    if r.status_code == 200:
+        # File exists, update it
+        sha = r.json()["sha"]
+        data = {
+            "message": "Update quiz.csv via Streamlit PDF app",
+            "content": base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8"),
+            "sha": sha
+        }
+        put_r = requests.put(url, headers=headers, json=data)
+    else:
+        # File doesn't exist, create it
+        data = {
+            "message": "Create quiz.csv via Streamlit PDF app",
+            "content": base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8")
+        }
+        put_r = requests.put(url, headers=headers, json=data)
+
+    if put_r.status_code in [200, 201]:
+        st.success(f"✅ CSV uploaded to GitHub: https://github.com/{repo_name}/blob/main/{github_path}")
+    else:
+        st.error(f"❌ GitHub upload failed! Status: {put_r.status_code} Response: {put_r.text}")
 else:
     st.error("❌ No valid formatted data found. Check extracted text.")
