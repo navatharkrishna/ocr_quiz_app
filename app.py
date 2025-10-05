@@ -1,14 +1,13 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image
-import pytesseract
-import cv2  # Make sure opencv-python-headless is installed in requirements.txt
+import easyocr
+import cv2
 import numpy as np
 import openai
 import pandas as pd
 import json
-import os
 from github import Github
+import os
 
 # -------------------------
 # Streamlit UI
@@ -18,24 +17,22 @@ st.title("📘 Marathi + English OCR Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
 Upload a **PDF file** (Marathi or English), this app will:
-1. Extract text using OCR (Tesseract)
+1. Extract text using OCR (EasyOCR)
 2. Send text to GPT for cleaning & question formatting
 3. Generate a CSV file in the desired format
 4. Automatically push the CSV to your GitHub repo
 """)
 
 # -------------------------
-# Fetch sensitive info from environment variables
+# Fetch sensitive info from Streamlit secrets
 # -------------------------
-api_key = st.secrets["OPENAI_API_KEY"]
-github_token = st.secrets["MY_GH_TOKEN"]
-repo_name = st.secrets["MY_GH_REPO"]
-github_path = st.secrets["MY_GH_PATH"]
-
-
-if not all([api_key, github_token, repo_name, github_path]):
-    st.error("❌ One or more environment variables are missing! "
-             "Please set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH.")
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+    github_token = st.secrets["MY_GH_TOKEN"]
+    repo_name = st.secrets["MY_GH_REPO"]
+    github_path = st.secrets["MY_GH_PATH"]
+except KeyError:
+    st.error("❌ One or more secrets are missing! Please set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH in Streamlit secrets.")
     st.stop()
 
 openai.api_key = api_key
@@ -56,9 +53,9 @@ text_file_path = os.path.join(output_dir, "ocr_output.txt")
 csv_file_path = os.path.join(output_dir, "quiz.csv")
 
 # -------------------------
-# Step 1: OCR PDF → Extract text
+# Step 1: OCR PDF → Extract text using EasyOCR
 # -------------------------
-st.info("🔍 Running OCR... Please wait.")
+st.info("🔍 Running OCR using EasyOCR... Please wait.")
 
 try:
     doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
@@ -66,6 +63,7 @@ except Exception as e:
     st.error(f"❌ Failed to open PDF: {e}")
     st.stop()
 
+reader = easyocr.Reader(['en', 'mr'], gpu=False)  # English + Marathi
 output_text = ""
 
 for page_num in range(len(doc)):
@@ -76,15 +74,13 @@ for page_num in range(len(doc)):
     img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     if pix.n == 4:
         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-
+    
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    gray = cv2.medianBlur(gray, 3)
-    gray = cv2.dilate(gray, np.ones((1, 1), np.uint8), iterations=1)
-    pil_img = Image.fromarray(gray)
+    rgb_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)  # EasyOCR needs RGB
 
-    text = pytesseract.image_to_string(pil_img, lang="mar+eng")
-    output_text += f"\n--- Page {page_num + 1} ---\n{text}\n"
+    result = reader.readtext(rgb_img)
+    page_text = "\n".join([res[1] for res in result])
+    output_text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
 
 with open(text_file_path, "w", encoding="utf-8") as f:
     f.write(output_text)
