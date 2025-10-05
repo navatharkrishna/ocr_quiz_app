@@ -79,8 +79,19 @@ st.success("✅ Text extraction completed!")
 # -------------------------
 st.info("🤖 Formatting text using GPT...")
 
-max_chunk_size = 1500  # smaller chunks
-chunks = [output_text[i:i + max_chunk_size] for i in range(0, len(output_text), max_chunk_size)]
+# Chunking: split on newlines to avoid breaking sentences
+max_chunk_size = 1500
+lines = output_text.split("\n")
+chunks, current_chunk = [], ""
+for line in lines:
+    if len(current_chunk) + len(line) + 1 > max_chunk_size:
+        chunks.append(current_chunk)
+        current_chunk = line + "\n"
+    else:
+        current_chunk += line + "\n"
+if current_chunk.strip():
+    chunks.append(current_chunk)
+
 formatted_questions = []
 
 prompt_template = """
@@ -106,7 +117,7 @@ Return only JSON array, no extra text.
 
 for i, chunk in enumerate(chunks):
     st.write(f"Processing chunk {i+1} of {len(chunks)}...")
-    for attempt in range(3):  # retry 3 times
+    for attempt in range(3):
         try:
             response = openai.ChatCompletion.create(
                 model="gpt-4o-mini",
@@ -127,10 +138,10 @@ for i, chunk in enumerate(chunks):
                     st.warning(f"⚠️ Chunk {i+1} JSON parsing error. Content:\n{content}")
             else:
                 st.warning(f"⚠️ Chunk {i+1} returned empty response.")
-            break  # exit retry loop if successful
+            break
         except Exception as e:
             st.warning(f"⚠️ GPT API error in chunk {i+1}, attempt {attempt+1}: {e}")
-            time.sleep(2)  # wait before retry
+            time.sleep(2 * (attempt + 1))  # exponential backoff
 
 # -------------------------
 # Step 3: Convert JSON → CSV
@@ -154,31 +165,27 @@ if formatted_questions:
     # Step 4: Upload CSV to GitHub via requests
     # -------------------------
     st.info("⬆️ Uploading CSV to GitHub...")
+
     url = f"https://api.github.com/repos/{repo_name}/contents/{github_path}"
     headers = {"Authorization": f"token {github_token}"}
+    
+    content_bytes = base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8")
 
-    # Check if file exists
     r = requests.get(url, headers=headers)
     if r.status_code == 200:
         # File exists, update it
         sha = r.json()["sha"]
-        data = {
-            "message": "Update quiz.csv via Streamlit PDF app",
-            "content": base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8"),
-            "sha": sha
-        }
+        data = {"message": "Update quiz.csv via Streamlit PDF app", "content": content_bytes, "sha": sha}
         put_r = requests.put(url, headers=headers, json=data)
     else:
         # File doesn't exist, create it
-        data = {
-            "message": "Create quiz.csv via Streamlit PDF app",
-            "content": base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8")
-        }
+        data = {"message": "Create quiz.csv via Streamlit PDF app", "content": content_bytes}
         put_r = requests.put(url, headers=headers, json=data)
 
     if put_r.status_code in [200, 201]:
         st.success(f"✅ CSV uploaded to GitHub: https://github.com/{repo_name}/blob/main/{github_path}")
     else:
         st.error(f"❌ GitHub upload failed! Status: {put_r.status_code} Response: {put_r.text}")
+
 else:
     st.error("❌ No valid formatted data found. Check extracted text.")
