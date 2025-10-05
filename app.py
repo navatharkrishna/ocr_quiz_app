@@ -63,24 +63,23 @@ except Exception as e:
     st.error(f"❌ Failed to open PDF: {e}")
     st.stop()
 
-reader = easyocr.Reader(['en', 'mr'], gpu=False)  # English + Marathi
+reader = easyocr.Reader(['en', 'mr'], gpu=False)  # CPU mode
+
 output_text = ""
-
-for page_num in range(len(doc)):
-    page = doc[page_num]
-    mat = fitz.Matrix(3, 3)
-    pix = page.get_pixmap(matrix=mat, alpha=False)
-
+for page_num, page in enumerate(doc):
+    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
     img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     if pix.n == 4:
         img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    rgb_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)  # EasyOCR needs RGB
+    rgb_img = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
 
-    result = reader.readtext(rgb_img)
-    page_text = "\n".join([res[1] for res in result])
-    output_text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
+    try:
+        result = reader.readtext(rgb_img, detail=0)
+        page_text = "\n".join(result)
+        output_text += f"\n--- Page {page_num + 1} ---\n{page_text}\n"
+    except Exception as e:
+        st.warning(f"⚠️ OCR failed on page {page_num+1}: {e}")
 
 with open(text_file_path, "w", encoding="utf-8") as f:
     f.write(output_text)
@@ -101,7 +100,6 @@ formatted_questions = []
 
 for i, chunk in enumerate(chunks):
     st.write(f"Processing chunk {i+1} of {len(chunks)}...")
-
     prompt = """
 You are given OCR-extracted quiz questions in Marathi and English.
 Correct spelling/formatting and structure them in this JSON format:
@@ -122,10 +120,9 @@ Correct spelling/formatting and structure them in this JSON format:
 
 Return only JSON array, no extra text.
 """
-
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",  # or gpt-5-mini
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant that structures quiz questions."},
                 {"role": "user", "content": prompt + "\n\nText:\n" + chunk}
@@ -140,10 +137,7 @@ Return only JSON array, no extra text.
 # -------------------------
 if formatted_questions:
     df = pd.DataFrame(formatted_questions)
-    columns_order = [
-        "question_no", "question", "option1", "option2",
-        "option3", "option4", "correct_answer", "description", "reference"
-    ]
+    columns_order = ["question_no","question","option1","option2","option3","option4","correct_answer","description","reference"]
     for col in columns_order:
         if col not in df.columns:
             df[col] = ""
@@ -154,12 +148,7 @@ if formatted_questions:
     st.dataframe(df.head())
 
     with open(csv_file_path, "rb") as f:
-        st.download_button(
-            label="📥 Download CSV",
-            data=f,
-            file_name="quiz.csv",
-            mime="text/csv"
-        )
+        st.download_button(label="📥 Download CSV", data=f, file_name="quiz.csv", mime="text/csv")
 
     # -------------------------
     # Step 4: Upload CSV to GitHub
