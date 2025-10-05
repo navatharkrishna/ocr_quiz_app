@@ -1,8 +1,7 @@
 streamlit==1.29.0
-pandas==2.1.1
-numpy==1.26.2
-opencv-python-headless==4.8.1.78
-PyMuPDF==1.23.6
-easyocr==1.7.0
-openai==0.28.0
-PyGithub==1.77
+pandas==2.0.3
+numpy
+opencv-python
+easyocr
+PyGithub>=1.77
+openai
