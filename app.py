@@ -1,11 +1,13 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image
 import pytesseract
+import cv2
+import numpy as np
+import openai
 import pandas as pd
 import json
-import os
 from github import Github
+import os
 
 # -------------------------
 # Streamlit UI
@@ -15,7 +17,7 @@ st.title("📘 Marathi + English OCR Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
 Upload a **PDF file** (Marathi or English), this app will:
-1. Extract text using OCR (Tesseract)
+1. Extract text using OCR (pytesseract)
 2. Send text to GPT for cleaning & question formatting
 3. Generate a CSV file in the desired format
 4. Automatically push the CSV to your GitHub repo
@@ -33,7 +35,6 @@ except KeyError:
     st.error("❌ Missing secrets! Set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH in Streamlit secrets.")
     st.stop()
 
-import openai
 openai.api_key = api_key
 
 # -------------------------
@@ -54,52 +55,36 @@ csv_file_path = os.path.join(output_dir, "quiz.csv")
 # -------------------------
 # Step 1: OCR PDF → Extract text
 # -------------------------
-st.info("🔍 Running OCR using Tesseract... Please wait.")
+@st.cache_data
+def ocr_pdf(file_bytes):
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    text = ""
+    for page_num, page in enumerate(doc):
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))  # faster than 2.0
+        img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+        if pix.n == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        page_text = pytesseract.image_to_string(gray, lang="eng+mar")  # Marathi + English
+        text += f"\n--- Page {page_num+1} ---\n{page_text}\n"
+    return text
 
-try:
-    doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
-except Exception as e:
-    st.error(f"❌ Failed to open PDF: {e}")
-    st.stop()
-
-output_text = ""
-
-for page_num, page in enumerate(doc):
-    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # High-res image
-    img_path = f"temp_page_{page_num}.png"
-    pix.save(img_path)
-
-    try:
-        text = pytesseract.image_to_string(
-            Image.open(img_path),
-            lang="eng+mar"  # English + Marathi
-        )
-        output_text += f"\n--- Page {page_num + 1} ---\n{text}\n"
-    except Exception as e:
-        st.warning(f"⚠️ OCR failed on page {page_num+1}: {e}")
-
-    os.remove(img_path)
-
+st.info("🔍 Running OCR... Please wait.")
+output_text = ocr_pdf(uploaded_pdf.read())
 with open(text_file_path, "w", encoding="utf-8") as f:
     f.write(output_text)
-
 st.success("✅ OCR completed!")
 
 # -------------------------
 # Step 2: Send OCR text to GPT
 # -------------------------
-st.info("🤖 Formatting text using GPT...")
-
-with open(text_file_path, "r", encoding="utf-8") as f:
-    raw_text = f.read()
-
-max_chunk_size = 3000
-chunks = [raw_text[i:i + max_chunk_size] for i in range(0, len(raw_text), max_chunk_size)]
-formatted_questions = []
-
-for i, chunk in enumerate(chunks):
-    st.write(f"Processing chunk {i+1} of {len(chunks)}...")
-    prompt = """
+@st.cache_data
+def gpt_format_text(raw_text):
+    max_chunk_size = 3000
+    chunks = [raw_text[i:i+max_chunk_size] for i in range(0, len(raw_text), max_chunk_size)]
+    formatted_questions = []
+    for chunk in chunks:
+        prompt = """
 You are given OCR-extracted quiz questions in Marathi and English.
 Correct spelling/formatting and structure them in this JSON format:
 
@@ -119,7 +104,6 @@ Correct spelling/formatting and structure them in this JSON format:
 
 Return only JSON array, no extra text.
 """
-    try:
         response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[
@@ -127,9 +111,14 @@ Return only JSON array, no extra text.
                 {"role": "user", "content": prompt + "\n\nText:\n" + chunk}
             ]
         )
-        formatted_questions += json.loads(response.choices[0].message.content.strip())
-    except Exception as e:
-        st.warning(f"⚠️ GPT/JSON error in chunk {i+1}: {e}")
+        try:
+            formatted_questions += json.loads(response.choices[0].message.content.strip())
+        except:
+            continue
+    return formatted_questions
+
+st.info("🤖 Formatting text using GPT...")
+formatted_questions = gpt_format_text(output_text)
 
 # -------------------------
 # Step 3: Convert JSON → CSV
@@ -142,10 +131,8 @@ if formatted_questions:
             df[col] = ""
     df = df[columns_order]
     df.to_csv(csv_file_path, index=False, encoding="utf-8-sig")
-
     st.success("✅ CSV generated!")
     st.dataframe(df.head())
-
     with open(csv_file_path, "rb") as f:
         st.download_button(label="📥 Download CSV", data=f, file_name="quiz.csv", mime="text/csv")
 
@@ -155,7 +142,6 @@ if formatted_questions:
     st.info("⬆️ Uploading CSV to GitHub...")
     g = Github(github_token)
     repo = g.get_repo(repo_name)
-
     csv_content = df.to_csv(index=False, encoding="utf-8-sig")
     try:
         contents = repo.get_contents(github_path)
@@ -167,7 +153,7 @@ if formatted_questions:
             branch="main"
         )
         st.success(f"✅ CSV updated at GitHub: {repo.html_url}/blob/main/{github_path}")
-    except Exception:
+    except:
         repo.create_file(
             path=github_path,
             message="Create quiz.csv via Streamlit OCR app",
