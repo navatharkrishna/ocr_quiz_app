@@ -1,22 +1,11 @@
-# Streamlit
 streamlit==1.29.0
-
-# OCR and image processing
 easyocr==1.6.0
-opencv-python-headless==4.5.4.60  # Must match easyocr requirement
-Pillow==10.1.0
-numpy==1.26.0
-
-# Data handling
-pandas==2.0.3  # Compatible with Python 3.13
-
-# Github integration
+opencv-python-headless==4.5.4.60
+Pillow==9.5.0
+numpy==1.24.4
+pandas==2.0.3
 PyGithub==1.59
-
-# HTTP requests
 requests==2.32.0
-
-# Utilities for improved logging and markdown
 rich==14.1.0
 markdown-it-py==4.0.0
 mdurl==0.1.2
