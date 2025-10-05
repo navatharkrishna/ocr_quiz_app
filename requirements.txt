@@ -1,0 +1,9 @@
+streamlit
+pytesseract
+PyMuPDF
+pillow
+opencv-python
+numpy
+pandas
+openai
+PyGithub
