@@ -28,9 +28,9 @@ Upload a **PDF file** (Marathi or English), this app will:
 # Fetch sensitive info from environment variables
 # -------------------------
 api_key = os.getenv("OPENAI_API_KEY")
-github_token = os.getenv("GITHUB_TOKEN")
-repo_name = os.getenv("GITHUB_REPO")
-github_path = os.getenv("GITHUB_PATH")
+github_token = os.getenv("MY_GH_TOKEN")
+repo_name = os.getenv("MY_GH_REPO")
+github_path = os.getenv("MY_GH_PATH")
 
 if not all([api_key, github_token, repo_name, github_path]):
     st.error("❌ One or more environment variables are missing! Please set OPENAI_API_KEY, GITHUB_TOKEN, GITHUB_REPO, GITHUB_PATH.")
