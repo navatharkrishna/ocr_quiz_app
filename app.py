@@ -7,6 +7,7 @@ import os
 import requests
 import base64
 import time
+import re
 
 # -------------------------
 # Streamlit UI
@@ -79,7 +80,7 @@ st.success("✅ Text extraction completed!")
 # -------------------------
 st.info("🤖 Formatting text using GPT...")
 
-# Chunking: split on newlines to avoid breaking sentences
+# Split text into manageable chunks (avoid breaking sentences)
 max_chunk_size = 1500
 lines = output_text.split("\n")
 chunks, current_chunk = [], ""
@@ -115,6 +116,15 @@ Correct spelling/formatting and structure them in this JSON format:
 Return only JSON array, no extra text.
 """
 
+def clean_json_string(s):
+    """
+    Sometimes GPT returns invalid JSON (extra commas, truncated strings).
+    This function tries to fix common issues.
+    """
+    s = re.sub(r",\s*]", "]", s)  # trailing commas
+    s = re.sub(r",\s*}", "}", s)
+    return s
+
 for i, chunk in enumerate(chunks):
     st.write(f"Processing chunk {i+1} of {len(chunks)}...")
     for attempt in range(3):
@@ -128,14 +138,15 @@ for i, chunk in enumerate(chunks):
             )
             content = response.choices[0].message.content.strip()
             if content:
+                content_clean = clean_json_string(content)
                 try:
-                    data = json.loads(content)
+                    data = json.loads(content_clean)
                     if isinstance(data, list):
                         formatted_questions += data
                     else:
                         st.warning(f"⚠️ Chunk {i+1} returned invalid JSON (not a list). Skipping.")
                 except json.JSONDecodeError:
-                    st.warning(f"⚠️ Chunk {i+1} JSON parsing error. Content:\n{content}")
+                    st.warning(f"⚠️ Chunk {i+1} JSON parsing error. Content:\n{content_clean}")
             else:
                 st.warning(f"⚠️ Chunk {i+1} returned empty response.")
             break
@@ -162,7 +173,7 @@ if formatted_questions:
         st.download_button(label="📥 Download CSV", data=f, file_name="quiz.csv", mime="text/csv")
 
     # -------------------------
-    # Step 4: Upload CSV to GitHub via requests
+    # Step 4: Upload CSV to GitHub
     # -------------------------
     st.info("⬆️ Uploading CSV to GitHub...")
 
@@ -172,14 +183,14 @@ if formatted_questions:
     content_bytes = base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8")
 
     r = requests.get(url, headers=headers)
+    data = {"message": "Upload quiz.csv via Streamlit PDF app", "content": content_bytes, "branch": "main"}
     if r.status_code == 200:
         # File exists, update it
-        sha = r.json()["sha"]
-        data = {"message": "Update quiz.csv via Streamlit PDF app", "content": content_bytes, "sha": sha}
+        sha = r.json().get("sha")
+        data["sha"] = sha
         put_r = requests.put(url, headers=headers, json=data)
     else:
         # File doesn't exist, create it
-        data = {"message": "Create quiz.csv via Streamlit PDF app", "content": content_bytes}
         put_r = requests.put(url, headers=headers, json=data)
 
     if put_r.status_code in [200, 201]:
