@@ -1,10 +1,10 @@
 streamlit
-easyocr
-opencv-python-headless
+PyMuPDF
 pillow
 pytesseract
-PyMuPDF
+opencv-python-headless
 numpy
 pandas
 openai
 PyGithub
+easyocr
