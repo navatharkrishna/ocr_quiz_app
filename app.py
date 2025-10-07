@@ -17,9 +17,9 @@ st.title("📘 Marathi + English PDF Quiz Extractor & GitHub Uploader")
 st.markdown("""
 ### 🧠 What this app does:
 1️⃣ Extracts text from uploaded **PDF** (supports Marathi + English)  
-2️⃣ Uses **GPT (gpt-4o-mini)** to clean and format quiz questions  
-3️⃣ Converts to a **CSV file**  
-4️⃣ Automatically uploads to your **GitHub repo 🚀**
+2️⃣ Auto-corrects Marathi OCR text using GPT  
+3️⃣ Converts to clean **quiz JSON + CSV**  
+4️⃣ Uploads automatically to your **GitHub repo 🚀**
 """)
 
 # -------------------------
@@ -41,11 +41,11 @@ for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https
     os.environ.pop(proxy_var, None)
 
 # -------------------------
-# Safe OpenAI Initialization
+# OpenAI Client (with retries)
 # -------------------------
 def create_openai_client(api_key):
     transport = httpx.HTTPTransport(retries=3)
-    return OpenAI(api_key=api_key, http_client=httpx.Client(transport=transport, timeout=60.0))
+    return OpenAI(api_key=api_key, http_client=httpx.Client(transport=transport, timeout=120.0))
 
 client = create_openai_client(openai_api_key)
 
@@ -58,13 +58,15 @@ if not uploaded_file:
     st.stop()
 
 # -------------------------
-# Step 1: Extract Text
+# Step 1: Extract Text (Better accuracy)
 # -------------------------
-with st.spinner("🔍 Extracting text from PDF..."):
+with st.spinner("🔍 Extracting full text from PDF..."):
     pdf_doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     extracted_text = ""
     for page in pdf_doc:
-        extracted_text += page.get_text("text") + "\n"
+        # Combine both text layers for better accuracy
+        text = page.get_text("text", flags=1 | 2 | 8)  # Extract all available text
+        extracted_text += text.strip() + "\n\n"
 
 if not extracted_text.strip():
     st.error("❌ No readable text found in the uploaded PDF.")
@@ -73,8 +75,38 @@ if not extracted_text.strip():
 st.text_area("📜 Extracted Text Preview", extracted_text[:1500])
 
 # -------------------------
-# Step 2: GPT Prompt Template
+# Step 2: Marathi Text Correction
 # -------------------------
+st.subheader("🪶 Correcting Marathi text using GPT...")
+
+correction_prompt = f"""
+You are a Marathi language expert.
+Given this OCR extracted Marathi text, correct all grammar, spacing, and word recognition errors.
+Do not translate it — just fix the Marathi text.
+
+Text:
+{extracted_text}
+"""
+
+with st.spinner("✨ Correcting Marathi text..."):
+    try:
+        correction_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": correction_prompt}],
+            temperature=0.3,
+        )
+        corrected_text = correction_response.choices[0].message.content.strip()
+    except Exception as e:
+        st.warning(f"⚠️ Marathi correction failed: {e}. Using raw text instead.")
+        corrected_text = extracted_text
+
+st.text_area("✅ Corrected Text Preview", corrected_text[:1500])
+
+# -------------------------
+# Step 3: Quiz JSON Extraction
+# -------------------------
+st.subheader("🧩 Extracting structured quiz data...")
+
 prompt_template = """
 You are an AI that converts raw OCR quiz text into structured JSON.
 
@@ -96,15 +128,9 @@ Output ONLY valid JSON array like this:
 Input text may be Marathi or English. Skip invalid or incomplete questions.
 """
 
-# Combine with extracted text
-prompt = f"{prompt_template}\n\nProcess this input text:\n{extracted_text}"
+prompt = f"{prompt_template}\n\nProcess this corrected text:\n{corrected_text}"
 
-# -------------------------
-# Step 3: Send to GPT
-# -------------------------
-st.subheader("✨ Converting text to structured quiz format...")
-
-with st.spinner("🤖 Processing with GPT..."):
+with st.spinner("🤖 Extracting quiz questions..."):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -132,14 +158,16 @@ except Exception:
     st.stop()
 
 df = pd.DataFrame(quiz_data)
-st.dataframe(df.head())
+
+# Remove index column from display
+st.dataframe(df, use_container_width=True, hide_index=True)
 
 # -------------------------
-# Step 5: Save as CSV
+# Step 5: Save as CSV (no index)
 # -------------------------
 timestamp = time.strftime("%Y%m%d-%H%M%S")
 csv_filename = f"quiz_{timestamp}.csv"
-df.to_csv(csv_filename, index=False)
+df.to_csv(csv_filename, index=False, encoding="utf-8-sig")
 st.success(f"✅ CSV file created: {csv_filename}")
 
 # -------------------------
@@ -153,7 +181,6 @@ try:
     with open(csv_filename, "rb") as f:
         content = f.read()
 
-    # Use timestamped file for versioning
     github_full_path = github_path.replace(".csv", f"_{timestamp}.csv")
 
     repo.create_file(
