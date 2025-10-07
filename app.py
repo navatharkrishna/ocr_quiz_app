@@ -9,85 +9,74 @@ import requests
 import base64
 import time
 import re
-from datetime import datetime
+from PIL import Image
 
 # -------------------------
-# Streamlit Setup
+# Streamlit UI
 # -------------------------
-st.set_page_config(page_title="OCR + AI Quiz Extractor", layout="wide")
+st.set_page_config(page_title="📘 Marathi + English OCR PDF Quiz Extractor", layout="wide")
 st.title("📘 Marathi + English OCR PDF Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
-Upload a **PDF file** (Marathi or English).  
-This app will:
-1. Extract text using **OCR (Tesseract)**  
-2. Use **GPT** to format questions properly  
-3. Generate a **CSV file**  
-4. Automatically **upload it to your GitHub repository** 🚀
+Upload a **PDF file** (Marathi or English), this app will:
+
+1. 🧠 Extract text using **OCR (Tesseract)**
+2. 🤖 Use **GPT** to format questions properly
+3. 📊 Generate a **CSV file**
+4. 🚀 Automatically upload it to your **GitHub repository**
 """)
 
 # -------------------------
-# Load Secrets (No Hardcoding!)
+# Load secrets (no hardcoding)
 # -------------------------
-required_keys = ["OPENAI_API_KEY", "MY_GH_TOKEN", "MY_GH_REPO", "MY_GH_PATH"]
-missing = [k for k in required_keys if k not in st.secrets]
-
-if missing:
-    st.error(f"❌ Missing Streamlit secrets: {', '.join(missing)}")
+try:
+    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+    github_token = st.secrets["MY_GH_TOKEN"]
+    repo_name = st.secrets["MY_GH_REPO"]
+    github_path = st.secrets["MY_GH_PATH"]
+except KeyError:
+    st.error("❌ Missing secrets! Please add OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH in Streamlit secrets.")
     st.stop()
 
-api_key = st.secrets["OPENAI_API_KEY"]
-github_token = st.secrets["MY_GH_TOKEN"]
-repo_name = st.secrets["MY_GH_REPO"]
-github_path = st.secrets["MY_GH_PATH"]
-
-client = OpenAI(api_key=api_key)
+client = OpenAI()  # ✅ Works for OpenAI v1.51.0+
 
 # -------------------------
-# File Upload
+# Upload PDF
 # -------------------------
 uploaded_pdf = st.file_uploader("📄 Upload PDF file", type=["pdf"])
 if uploaded_pdf is None:
     st.stop()
 
-# Dynamic filenames
 output_dir = "output"
 os.makedirs(output_dir, exist_ok=True)
-
-pdf_name = os.path.splitext(uploaded_pdf.name)[0]
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-csv_file_name = f"{pdf_name}_{timestamp}.csv"
-
-text_file_path = os.path.join(output_dir, f"{pdf_name}_text.txt")
-csv_file_path = os.path.join(output_dir, csv_file_name)
+text_file_path = os.path.join(output_dir, "ocr_text_output.txt")
+csv_file_path = os.path.join(output_dir, "quiz.csv")
 
 # -------------------------
-# OCR Text Extraction
+# OCR Extraction
 # -------------------------
-st.info("🔍 Extracting text from PDF using OCR (Tesseract)...")
-
+st.info("🔍 Extracting text from PDF using OCR...")
 try:
     images = convert_from_bytes(uploaded_pdf.read())
 except Exception as e:
-    st.error(f"❌ Failed to read PDF for OCR: {e}")
+    st.error(f"❌ Failed to read PDF: {e}")
     st.stop()
 
-output_text = ""
+ocr_text = ""
 for i, img in enumerate(images):
-    st.text(f"📄 Processing page {i+1}/{len(images)} ...")
-    text = pytesseract.image_to_string(img, lang="eng+mar")  # English + Marathi OCR
-    output_text += f"\n--- Page {i+1} ---\n{text}\n"
+    st.write(f"📄 Processing Page {i+1}...")
+    text = pytesseract.image_to_string(img, lang="mar+eng")  # Marathi + English OCR
+    ocr_text += f"\n--- Page {i+1} ---\n{text}\n"
 
 with open(text_file_path, "w", encoding="utf-8") as f:
-    f.write(output_text)
-
-st.success("✅ OCR text extraction completed!")
+    f.write(ocr_text)
+st.success("✅ OCR extraction completed!")
 
 # -------------------------
-# Split into Chunks
+# Split text into chunks
 # -------------------------
 max_chunk_size = 1500
-lines = output_text.split("\n")
+lines = ocr_text.split("\n")
 chunks, current_chunk = [], ""
 for line in lines:
     if len(current_chunk) + len(line) + 1 > max_chunk_size:
@@ -102,14 +91,14 @@ if current_chunk.strip():
 # GPT Prompt Template
 # -------------------------
 prompt_template = """
-You are given OCR-extracted quiz questions in Marathi and English.
-Return ONLY valid JSON, no explanation or extra text.
+You are given quiz questions extracted from a PDF in Marathi or English.
+Return ONLY valid JSON — no explanation, no markdown.
 
-JSON format:
+Format:
 [
   {
     "question_no": 1,
-    "question": "Corrected question text",
+    "question": "Question text",
     "option1": "Option A",
     "option2": "Option B",
     "option3": "Option C",
@@ -128,11 +117,11 @@ def clean_json_string(raw):
         text = match.group(1)
     text = re.sub(r",\s*]", "]", text)
     text = re.sub(r",\s*}", "}", text)
-    text = text.replace("“", "\"").replace("”", "\"").replace("‘", "'").replace("’", "'")
+    text = text.replace("“", "\"").replace("”", "\"")
     return text.strip()
 
 # -------------------------
-# Process with GPT
+# Process each chunk with GPT
 # -------------------------
 formatted_questions = []
 progress = st.progress(0)
@@ -145,7 +134,7 @@ for i, chunk in enumerate(chunks):
             resp = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
-                    {"role": "system", "content": "You are a precise JSON-only formatter."},
+                    {"role": "system", "content": "You are a JSON-only quiz formatter."},
                     {"role": "user", "content": prompt_template + "\n\nText:\n" + chunk}
                 ],
                 temperature=0.2,
@@ -159,12 +148,12 @@ for i, chunk in enumerate(chunks):
                 if isinstance(data, list):
                     formatted_questions += data
                 else:
-                    st.warning(f"⚠️ Chunk {i+1} not a list. Skipped.")
+                    st.warning(f"⚠️ Chunk {i+1} did not return a list.")
             except json.JSONDecodeError as e:
-                st.warning(f"⚠️ JSON parse error in chunk {i+1}: {e}")
+                st.warning(f"⚠️ Chunk {i+1} JSON error: {e}")
             break
         except Exception as e:
-            st.warning(f"⚠️ GPT error (chunk {i+1}, try {attempt+1}): {e}")
+            st.warning(f"⚠️ GPT error (chunk {i+1}, attempt {attempt+1}): {e}")
             time.sleep(2 * (attempt + 1))
 
     progress.progress((i + 1) / len(chunks))
@@ -173,7 +162,7 @@ progress.empty()
 status_text.text("✅ GPT formatting completed!")
 
 # -------------------------
-# Convert JSON → CSV (No Index)
+# Convert JSON → CSV
 # -------------------------
 if formatted_questions:
     df = pd.DataFrame(formatted_questions)
@@ -184,39 +173,42 @@ if formatted_questions:
     for col in required_cols:
         if col not in df.columns:
             df[col] = ""
+
     df = df[required_cols]
 
+    # ✅ Save without index
     df.to_csv(csv_file_path, index=False, encoding="utf-8-sig")
 
-    st.success(f"✅ CSV '{csv_file_name}' generated successfully!")
+    st.success("✅ CSV generated successfully!")
     st.dataframe(df.style.hide(axis='index'))
 
     with open(csv_file_path, "rb") as f:
-        st.download_button("📥 Download CSV", f, file_name=csv_file_name, mime="text/csv")
+        st.download_button("📥 Download CSV", f, file_name="quiz.csv", mime="text/csv")
 
     # -------------------------
-    # Upload to GitHub (Dynamic)
+    # Upload to GitHub
     # -------------------------
     st.info("⬆️ Uploading CSV to GitHub...")
-    url = f"https://api.github.com/repos/{repo_name}/contents/{github_path}/{csv_file_name}"
+    url = f"https://api.github.com/repos/{repo_name}/contents/{github_path}"
     headers = {"Authorization": f"token {github_token}"}
     content_bytes = base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8")
 
     # Check if file exists
     r = requests.get(url, headers=headers)
     data = {
-        "message": f"Upload {csv_file_name} via Streamlit OCR app",
+        "message": "Upload quiz.csv via OCR Streamlit App",
         "content": content_bytes,
-        "branch": "main"
+        "branch": "master"
     }
+
     if r.status_code == 200:
         sha = r.json().get("sha")
-        data["sha"] = sha  # update existing
+        data["sha"] = sha
 
     put_r = requests.put(url, headers=headers, json=data)
     if put_r.status_code in [200, 201]:
-        st.success(f"✅ Uploaded to GitHub: https://github.com/{repo_name}/blob/main/{github_path}/{csv_file_name}")
+        st.success(f"✅ CSV uploaded to GitHub: https://github.com/{repo_name}/blob/master/{github_path}")
     else:
         st.error(f"❌ GitHub upload failed! {put_r.status_code}: {put_r.text}")
 else:
-    st.error("❌ No valid data generated. Check OCR extraction or GPT output.")
+    st.error("❌ No valid quiz data extracted. Check OCR text.")
