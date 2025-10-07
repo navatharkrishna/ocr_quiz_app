@@ -1,6 +1,6 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import openai
+from openai import OpenAI
 import pandas as pd
 import json
 import os
@@ -35,7 +35,7 @@ except KeyError:
     st.error("❌ Missing secrets! Set OPENAI_API_KEY, MY_GH_TOKEN, MY_GH_REPO, MY_GH_PATH in Streamlit secrets.")
     st.stop()
 
-openai.api_key = api_key
+client = OpenAI(api_key=api_key)
 
 # -------------------------
 # File upload
@@ -100,7 +100,7 @@ You are given PDF-extracted quiz questions in Marathi and English.
 Correct spelling/formatting and structure them in this JSON format:
 
 [
-  {{
+  {
     "question_no": 1,
     "question": "Corrected question text",
     "option1": "Option A text",
@@ -110,32 +110,34 @@ Correct spelling/formatting and structure them in this JSON format:
     "correct_answer": "Correct answer or option number",
     "description": "Explanation if available",
     "reference": "Source / reference if available"
-  }}
+  }
 ]
 
 Return only JSON array, no extra text.
 """
 
 def clean_json_string(s):
-    """
-    Sometimes GPT returns invalid JSON (extra commas, truncated strings).
-    This function tries to fix common issues.
-    """
-    s = re.sub(r",\s*]", "]", s)  # trailing commas
+    """Fix common JSON issues"""
+    s = re.sub(r",\s*]", "]", s)
     s = re.sub(r",\s*}", "}", s)
     return s
 
+progress = st.progress(0)
+status_text = st.empty()
+
 for i, chunk in enumerate(chunks):
-    st.write(f"Processing chunk {i+1} of {len(chunks)}...")
+    status_text.text(f"Processing chunk {i+1} of {len(chunks)}...")
     for attempt in range(3):
         try:
-            response = openai.ChatCompletion.create(
+            response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": "You are a helpful assistant that structures quiz questions."},
                     {"role": "user", "content": prompt_template + "\n\nText:\n" + chunk}
-                ]
+                ],
+                temperature=0.3,
             )
+
             content = response.choices[0].message.content.strip()
             if content:
                 content_clean = clean_json_string(content)
@@ -146,31 +148,43 @@ for i, chunk in enumerate(chunks):
                     else:
                         st.warning(f"⚠️ Chunk {i+1} returned invalid JSON (not a list). Skipping.")
                 except json.JSONDecodeError:
-                    st.warning(f"⚠️ Chunk {i+1} JSON parsing error. Content:\n{content_clean}")
+                    st.warning(f"⚠️ Chunk {i+1} JSON parsing error. Content:\n{content_clean[:500]}...")
             else:
                 st.warning(f"⚠️ Chunk {i+1} returned empty response.")
             break
         except Exception as e:
             st.warning(f"⚠️ GPT API error in chunk {i+1}, attempt {attempt+1}: {e}")
-            time.sleep(2 * (attempt + 1))  # exponential backoff
+            time.sleep(2 * (attempt + 1))
+    progress.progress((i + 1) / len(chunks))
+
+progress.empty()
+status_text.text("✅ GPT formatting completed!")
 
 # -------------------------
 # Step 3: Convert JSON → CSV
 # -------------------------
 if formatted_questions:
     df = pd.DataFrame(formatted_questions)
-    columns_order = ["question_no","question","option1","option2","option3","option4","correct_answer","description","reference"]
+    columns_order = [
+        "question_no", "question", "option1", "option2",
+        "option3", "option4", "correct_answer", "description", "reference"
+    ]
     for col in columns_order:
         if col not in df.columns:
             df[col] = ""
     df = df[columns_order]
     df.to_csv(csv_file_path, index=False, encoding="utf-8-sig")
 
-    st.success("✅ CSV generated!")
+    st.success("✅ CSV generated successfully!")
     st.dataframe(df.head())
 
     with open(csv_file_path, "rb") as f:
-        st.download_button(label="📥 Download CSV", data=f, file_name="quiz.csv", mime="text/csv")
+        st.download_button(
+            label="📥 Download CSV",
+            data=f,
+            file_name="quiz.csv",
+            mime="text/csv"
+        )
 
     # -------------------------
     # Step 4: Upload CSV to GitHub
@@ -179,18 +193,22 @@ if formatted_questions:
 
     url = f"https://api.github.com/repos/{repo_name}/contents/{github_path}"
     headers = {"Authorization": f"token {github_token}"}
-    
     content_bytes = base64.b64encode(open(csv_file_path, "rb").read()).decode("utf-8")
 
     r = requests.get(url, headers=headers)
-    data = {"message": "Upload quiz.csv via Streamlit PDF app", "content": content_bytes, "branch": "main"}
+    data = {
+        "message": "Upload quiz.csv via Streamlit PDF app",
+        "content": content_bytes,
+        "branch": "main"
+    }
+
     if r.status_code == 200:
-        # File exists, update it
+        # File exists → update
         sha = r.json().get("sha")
         data["sha"] = sha
         put_r = requests.put(url, headers=headers, json=data)
     else:
-        # File doesn't exist, create it
+        # Create new file
         put_r = requests.put(url, headers=headers, json=data)
 
     if put_r.status_code in [200, 201]:
