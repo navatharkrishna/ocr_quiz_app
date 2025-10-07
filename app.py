@@ -16,11 +16,11 @@ st.set_page_config(page_title="📘 OCR Quiz Extractor", layout="wide")
 st.title("📘 Marathi + English OCR PDF Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
-This app will:
-1. Extract text from PDF (Marathi or English) using OCR 🧠  
-2. Use GPT to clean, structure, and format quiz data  
-3. Generate a neat CSV file  
-4. Automatically upload it to your GitHub repo 🚀
+### 🧠 What this app does:
+1. Extracts text from PDF (Marathi or English) using OCR  
+2. Uses GPT (Davinci) to clean, structure, and format quiz data  
+3. Generates a neat CSV file  
+4. Automatically uploads it to your GitHub repo 🚀
 """)
 
 # -------------------------
@@ -74,7 +74,7 @@ st.info("🤖 Formatting text using GPT to structured quiz format...")
 prompt_template = """
 You are an AI that converts raw PDF text into clean quiz data.
 
-Output ONLY JSON array like this:
+Output ONLY a JSON array in this format:
 [
   {
     "question_no": 1,
@@ -89,9 +89,10 @@ Output ONLY JSON array like this:
   }
 ]
 
-Input text may be Marathi or English.
+The input text may be in Marathi or English. Keep numbering sequential and data clean.
 """
 
+# Split text into manageable chunks for GPT
 chunks = [full_text[i:i+1500] for i in range(0, len(full_text), 1500)]
 formatted_questions = []
 
@@ -106,7 +107,11 @@ for i, chunk in enumerate(chunks):
                 max_tokens=1500,
                 temperature=0
             )
+
             text_output = response.choices[0].text.strip()
+            # Clean possible markdown code fences
+            text_output = text_output.replace("```json", "").replace("```", "")
+
             st.text_area(f"🧾 GPT Output (chunk {i+1})", text_output, height=150)
 
             data = json.loads(text_output)
@@ -114,9 +119,9 @@ for i, chunk in enumerate(chunks):
                 formatted_questions += data
                 break
         except json.JSONDecodeError:
-            st.warning("⚠️ JSON error — retrying...")
+            st.warning("⚠️ JSON decoding error — retrying...")
         except Exception as e:
-            st.warning(f"⚠️ API Error: {e}")
+            st.warning(f"⚠️ OpenAI API error: {e}")
         retry += 1
         time.sleep(2)
 
@@ -152,8 +157,9 @@ st.info("⬆️ Uploading CSV to your GitHub repo...")
 try:
     g = Github(github_token)
     repo = g.get_repo(repo_name)
+
     try:
-        contents = repo.get_contents(github_path)
+        contents = repo.get_contents(github_path, ref="main")
         repo.update_file(
             contents.path,
             "Update quiz.csv via Streamlit OCR app",
@@ -170,5 +176,6 @@ try:
             branch="main"
         )
         st.success(f"✅ CSV created at: https://github.com/{repo_name}/blob/main/{github_path}")
+
 except Exception as e:
     st.error(f"❌ GitHub upload failed: {e}")
