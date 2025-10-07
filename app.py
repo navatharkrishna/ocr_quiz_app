@@ -1,5 +1,5 @@
 import streamlit as st
-import openai
+from openai import OpenAI
 import pandas as pd
 import json
 import pytesseract
@@ -18,7 +18,7 @@ st.title("📘 Marathi + English OCR PDF Quiz Extractor & GitHub Uploader")
 st.markdown("""
 ### 🧠 What this app does:
 1. Extracts text from PDF (Marathi or English) using OCR  
-2. Uses GPT (Davinci) to clean, structure, and format quiz data  
+2. Uses GPT-4o-mini to clean, structure, and format quiz data  
 3. Generates a neat CSV file  
 4. Automatically uploads it to your GitHub repo 🚀
 """)
@@ -35,7 +35,8 @@ except KeyError as e:
     st.error(f"❌ Missing secret: {e}. Please set all required secrets in Streamlit Cloud.")
     st.stop()
 
-openai.api_key = api_key
+# Initialize OpenAI client (latest SDK)
+client = OpenAI(api_key=api_key)
 
 # -------------------------
 # File upload
@@ -72,9 +73,9 @@ st.success("✅ OCR text extraction completed!")
 st.info("🤖 Formatting text using GPT to structured quiz format...")
 
 prompt_template = """
-You are an AI that converts raw PDF text into clean quiz data.
+You are an AI that converts raw OCR text from Marathi or English quizzes into clean, structured quiz data.
 
-Output ONLY a JSON array in this format:
+Return ONLY a valid JSON array in this exact format:
 [
   {
     "question_no": 1,
@@ -89,40 +90,38 @@ Output ONLY a JSON array in this format:
   }
 ]
 
-The input text may be in Marathi or English. Keep numbering sequential and data clean.
+Ensure JSON is valid and does not include markdown or extra commentary.
 """
 
-# Split text into manageable chunks for GPT
-chunks = [full_text[i:i+1500] for i in range(0, len(full_text), 1500)]
+chunks = [full_text[i:i+2000] for i in range(0, len(full_text), 2000)]
 formatted_questions = []
 
 for i, chunk in enumerate(chunks):
     st.write(f"Processing chunk {i+1} / {len(chunks)}...")
-    retry = 0
-    while retry < 3:
+    for retry in range(3):
         try:
-            response = openai.Completion.create(
-                engine="text-davinci-003",
-                prompt=prompt_template + "\n\nText:\n" + chunk,
-                max_tokens=1500,
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": prompt_template},
+                    {"role": "user", "content": chunk}
+                ],
                 temperature=0
             )
 
-            text_output = response.choices[0].text.strip()
-            # Clean possible markdown code fences
+            text_output = response.choices[0].message.content.strip()
             text_output = text_output.replace("```json", "").replace("```", "")
 
             st.text_area(f"🧾 GPT Output (chunk {i+1})", text_output, height=150)
 
             data = json.loads(text_output)
             if isinstance(data, list):
-                formatted_questions += data
+                formatted_questions.extend(data)
                 break
         except json.JSONDecodeError:
-            st.warning("⚠️ JSON decoding error — retrying...")
+            st.warning("⚠️ JSON decode error — retrying...")
         except Exception as e:
-            st.warning(f"⚠️ OpenAI API error: {e}")
-        retry += 1
+            st.warning(f"⚠️ OpenAI error: {e}")
         time.sleep(2)
 
 # -------------------------
