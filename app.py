@@ -1,192 +1,159 @@
 import streamlit as st
-from openai import OpenAI
+import fitz  # PyMuPDF
+import openai
+import httpx
 import pandas as pd
 import json
-import pytesseract
-from pdf2image import convert_from_bytes
 from github import Github
-import io
 import os
 import time
 
 # -------------------------
-# Streamlit Page Config
+# Streamlit App Config
 # -------------------------
-st.set_page_config(page_title="📘 OCR Quiz Extractor", layout="wide")
-st.title("📘 Marathi + English OCR PDF Quiz Extractor & GitHub Uploader")
+st.set_page_config(page_title="📘 Marathi + English OCR PDF Quiz Extractor", layout="wide")
+st.title("📘 Marathi + English PDF Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
 ### 🧠 What this app does:
-1. Extracts text from PDF (Marathi or English) using OCR  
-2. Uses GPT (gpt-4o-mini) to clean, structure, and format quiz data  
-3. Generates a neat CSV file  
-4. Automatically uploads it to your GitHub repo 🚀
+1️⃣ Extracts text from uploaded **PDF** (supports Marathi + English)  
+2️⃣ Uses **GPT (gpt-4o-mini)** to format and structure quiz questions  
+3️⃣ Converts to a clean **CSV file**  
+4️⃣ Automatically uploads the result to your **GitHub repo 🚀**
 """)
 
 # -------------------------
-# Load Secrets
+# API & GitHub Credentials
 # -------------------------
-try:
-    api_key = st.secrets["OPENAI_API_KEY"]
-    github_token = st.secrets["MY_GH_TOKEN"]
-    repo_name = st.secrets["MY_GH_REPO"]
-    github_path = st.secrets["MY_GH_PATH"]
-except KeyError as e:
-    st.error(f"❌ Missing secret: {e}. Please set all required secrets in Streamlit Cloud.")
+openai_api_key = st.secrets.get("OPENAI_API_KEY")
+github_token = st.secrets.get("GITHUB_TOKEN")
+github_repo = st.secrets.get("GITHUB_REPO", "navatharkrishna/ocr_quiz_app")
+
+if not openai_api_key or not github_token:
+    st.error("🚨 Missing API keys! Please add OPENAI_API_KEY and GITHUB_TOKEN in Streamlit secrets.")
     st.stop()
 
 # -------------------------
-# Safe OpenAI Initialization (Fixes Proxy Error)
+# Fix for Proxy Issue
 # -------------------------
-for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:
-    if proxy_var in os.environ:
-        del os.environ[proxy_var]
+for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
+    os.environ.pop(proxy_var, None)
 
-client = OpenAI(api_key=api_key)
+# Create OpenAI client safely
+import httpx
+from openai import OpenAI
+
+def create_openai_client(api_key):
+    transport = httpx.HTTPTransport(retries=3)
+    client = OpenAI(api_key=api_key, http_client=httpx.Client(transport=transport, timeout=60.0))
+    return client
+
+client = create_openai_client(openai_api_key)
 
 # -------------------------
 # File Upload
 # -------------------------
-uploaded_pdf = st.file_uploader("📄 Upload your PDF file", type=["pdf"])
-if uploaded_pdf is None:
-    st.info("👆 Please upload a Marathi or English quiz PDF to begin.")
-    st.stop()
-
-st.info("🧩 Converting PDF pages to images...")
-
-# Convert PDF → Images
-try:
-    images = convert_from_bytes(uploaded_pdf.read())
-except Exception as e:
-    st.error(f"❌ Error reading PDF: {e}")
+uploaded_file = st.file_uploader("📄 Upload PDF file", type=["pdf"])
+if not uploaded_file:
+    st.info("Please upload a PDF file to start processing.")
     st.stop()
 
 # -------------------------
-# Step 1: OCR Extraction
+# Step 1: Extract Text
 # -------------------------
-progress_bar = st.progress(0)
-status_text = st.empty()
+with st.spinner("🔍 Extracting text from PDF..."):
+    pdf_doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+    extracted_text = ""
+    for page in pdf_doc:
+        extracted_text += page.get_text("text") + "\n"
 
-st.info("🔍 Extracting text from pages (OCR in progress...)")
-full_text = ""
+if not extracted_text.strip():
+    st.error("No readable text found in the PDF.")
+    st.stop()
 
-for i, img in enumerate(images):
-    status_text.text(f"Processing page {i+1} of {len(images)}...")
-    text = pytesseract.image_to_string(img, lang="mar+eng")
-    full_text += f"\n--- Page {i+1} ---\n{text}"
-    progress_bar.progress((i + 1) / len(images))
-
-progress_bar.empty()
-status_text.text("✅ OCR text extraction completed!")
+# Display a snippet
+st.text_area("📜 Extracted Text Preview", extracted_text[:1500])
 
 # -------------------------
-# Step 2: Process with GPT
+# Step 2: Process via GPT
 # -------------------------
-st.info("🤖 Formatting text using GPT to structured quiz format...")
+st.subheader("✨ Processing Text with GPT...")
 
-prompt_template = """
-You are an AI that converts raw OCR quiz text into structured JSON.
+prompt = f"""
+You are an AI that converts OCR quiz text into clean structured JSON.
+The text may be in Marathi or English.
 
-Output ONLY valid JSON array like this:
+Output JSON format:
 [
-  {
+  {{
     "question_no": 1,
-    "question": "Which planet is known as the Red Planet?",
-    "option1": "Earth",
-    "option2": "Mars",
-    "option3": "Venus",
-    "option4": "Jupiter",
-    "correct_answer": "Mars",
-    "description": "Mars is known as the Red Planet due to iron oxide on its surface.",
-    "reference": "Textbook Reference or N/A"
-  }
+    "question": "Question text",
+    "option1": "Option A",
+    "option2": "Option B",
+    "option3": "Option C",
+    "option4": "Option D",
+    "answer": "Correct option"
+  }}
 ]
 
-Input text may be Marathi or English. Skip invalid or incomplete questions.
+Text to process:
+{extracted_text}
 """
 
-chunks = [full_text[i:i+1500] for i in range(0, len(full_text), 1500)]
-formatted_questions = []
-
-for i, chunk in enumerate(chunks):
-    st.write(f"🧠 Processing text chunk {i+1} of {len(chunks)}...")
-    retry = 0
-    while retry < 3:
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": prompt_template},
-                    {"role": "user", "content": chunk}
-                ],
-                temperature=0
-            )
-
-            text_output = response.choices[0].message.content.strip()
-            text_output = text_output.replace("```json", "").replace("```", "")
-
-            st.text_area(f"🧾 GPT Output (Chunk {i+1})", text_output, height=150)
-            data = json.loads(text_output)
-
-            if isinstance(data, list):
-                formatted_questions += data
-                break
-        except json.JSONDecodeError:
-            st.warning("⚠️ JSON parse error — retrying...")
-        except Exception as e:
-            st.warning(f"⚠️ API Error: {e}")
-        retry += 1
-        time.sleep(2)
+with st.spinner("🧠 Thinking... extracting structured quiz data..."):
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+        )
+        raw_output = response.choices[0].message.content.strip()
+    except Exception as e:
+        st.error(f"OpenAI API Error: {e}")
+        st.stop()
 
 # -------------------------
-# Step 3: Convert JSON → CSV
+# Step 3: Parse JSON
 # -------------------------
-if not formatted_questions:
-    st.error("❌ No valid quiz data generated. Check OCR quality or prompt.")
+st.subheader("🧾 Parsing GPT Output")
+
+try:
+    json_start = raw_output.find("[")
+    json_end = raw_output.rfind("]") + 1
+    json_str = raw_output[json_start:json_end]
+    quiz_data = json.loads(json_str)
+except Exception:
+    st.error("⚠️ Failed to parse JSON from GPT response.")
+    st.text(raw_output)
     st.stop()
 
-df = pd.DataFrame(formatted_questions)
-columns = [
-    "question_no", "question", "option1", "option2", "option3", "option4",
-    "correct_answer", "description", "reference"
-]
-for col in columns:
-    if col not in df.columns:
-        df[col] = ""
-
-df = df[columns]
-csv_data = df.to_csv(index=False, encoding="utf-8-sig")
-
-st.success("✅ Quiz CSV generated successfully!")
+df = pd.DataFrame(quiz_data)
 st.dataframe(df.head())
 
-st.download_button("📥 Download CSV", data=csv_data, file_name="quiz.csv", mime="text/csv")
+# -------------------------
+# Step 4: Save CSV
+# -------------------------
+timestamp = time.strftime("%Y%m%d-%H%M%S")
+csv_filename = f"quiz_{timestamp}.csv"
+df.to_csv(csv_filename, index=False)
+st.success(f"✅ CSV file created: {csv_filename}")
 
 # -------------------------
-# Step 4: Upload CSV to GitHub
+# Step 5: Upload to GitHub
 # -------------------------
-st.info("⬆️ Uploading CSV to your GitHub repo...")
+st.subheader("🚀 Uploading to GitHub...")
 
 try:
     g = Github(github_token)
-    repo = g.get_repo(repo_name)
-    try:
-        contents = repo.get_contents(github_path)
-        repo.update_file(
-            contents.path,
-            "Update quiz.csv via Streamlit OCR app",
-            csv_data,
-            contents.sha,
-            branch="main"
-        )
-        st.success(f"✅ CSV updated at: https://github.com/{repo_name}/blob/main/{github_path}")
-    except Exception:
-        repo.create_file(
-            github_path,
-            "Create quiz.csv via Streamlit OCR app",
-            csv_data,
-            branch="main"
-        )
-        st.success(f"✅ CSV created at: https://github.com/{repo_name}/blob/main/{github_path}")
+    repo = g.get_repo(github_repo)
+    with open(csv_filename, "rb") as f:
+        content = f.read()
+    repo.create_file(
+        path=f"data/{csv_filename}",
+        message=f"Add quiz file {csv_filename}",
+        content=content,
+        branch="master",
+    )
+    st.success(f"✅ File uploaded successfully to GitHub → `data/{csv_filename}`")
 except Exception as e:
-    st.error(f"❌ GitHub upload failed: {e}")
+    st.error(f"GitHub Upload Failed: {e}")
