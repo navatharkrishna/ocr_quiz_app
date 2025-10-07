@@ -1,12 +1,12 @@
 import streamlit as st
 import fitz  # PyMuPDF
-import openai
-import httpx
 import pandas as pd
 import json
+import time
 from github import Github
 import os
-import time
+import httpx
+from openai import OpenAI
 
 # -------------------------
 # Streamlit App Config
@@ -17,36 +17,35 @@ st.title("📘 Marathi + English PDF Quiz Extractor & GitHub Uploader")
 st.markdown("""
 ### 🧠 What this app does:
 1️⃣ Extracts text from uploaded **PDF** (supports Marathi + English)  
-2️⃣ Uses **GPT (gpt-4o-mini)** to format and structure quiz questions  
-3️⃣ Converts to a clean **CSV file**  
-4️⃣ Automatically uploads the result to your **GitHub repo 🚀**
+2️⃣ Uses **GPT (gpt-4o-mini)** to clean and format quiz questions  
+3️⃣ Converts to a **CSV file**  
+4️⃣ Automatically uploads to your **GitHub repo 🚀**
 """)
 
 # -------------------------
-# API & GitHub Credentials
+# Load Secrets
 # -------------------------
 openai_api_key = st.secrets.get("OPENAI_API_KEY")
-github_token = st.secrets.get("GITHUB_TOKEN")
-github_repo = st.secrets.get("GITHUB_REPO", "navatharkrishna/ocr_quiz_app")
+github_token = st.secrets.get("MY_GH_TOKEN")
+github_repo = st.secrets.get("MY_GH_REPO")
+github_path = st.secrets.get("MY_GH_PATH", "data/quiz.csv")
 
-if not openai_api_key or not github_token:
-    st.error("🚨 Missing API keys! Please add OPENAI_API_KEY and GITHUB_TOKEN in Streamlit secrets.")
+if not openai_api_key or not github_token or not github_repo:
+    st.error("🚨 Missing API keys or GitHub info in Streamlit Secrets!")
     st.stop()
 
 # -------------------------
-# Fix for Proxy Issue
+# Fix Proxy Issue (for Streamlit Cloud)
 # -------------------------
 for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"]:
     os.environ.pop(proxy_var, None)
 
-# Create OpenAI client safely
-import httpx
-from openai import OpenAI
-
+# -------------------------
+# Safe OpenAI Initialization
+# -------------------------
 def create_openai_client(api_key):
     transport = httpx.HTTPTransport(retries=3)
-    client = OpenAI(api_key=api_key, http_client=httpx.Client(transport=transport, timeout=60.0))
-    return client
+    return OpenAI(api_key=api_key, http_client=httpx.Client(transport=transport, timeout=60.0))
 
 client = create_openai_client(openai_api_key)
 
@@ -68,39 +67,44 @@ with st.spinner("🔍 Extracting text from PDF..."):
         extracted_text += page.get_text("text") + "\n"
 
 if not extracted_text.strip():
-    st.error("No readable text found in the PDF.")
+    st.error("❌ No readable text found in the uploaded PDF.")
     st.stop()
 
-# Display a snippet
 st.text_area("📜 Extracted Text Preview", extracted_text[:1500])
 
 # -------------------------
-# Step 2: Process via GPT
+# Step 2: GPT Prompt Template
 # -------------------------
-st.subheader("✨ Processing Text with GPT...")
+prompt_template = """
+You are an AI that converts raw OCR quiz text into structured JSON.
 
-prompt = f"""
-You are an AI that converts OCR quiz text into clean structured JSON.
-The text may be in Marathi or English.
-
-Output JSON format:
+Output ONLY valid JSON array like this:
 [
-  {{
+  {
     "question_no": 1,
-    "question": "Question text",
-    "option1": "Option A",
-    "option2": "Option B",
-    "option3": "Option C",
-    "option4": "Option D",
-    "answer": "Correct option"
-  }}
+    "question": "Which planet is known as the Red Planet?",
+    "option1": "Earth",
+    "option2": "Mars",
+    "option3": "Venus",
+    "option4": "Jupiter",
+    "correct_answer": "Mars",
+    "description": "Mars is known as the Red Planet due to iron oxide on its surface.",
+    "reference": "Textbook Reference or N/A"
+  }
 ]
 
-Text to process:
-{extracted_text}
+Input text may be Marathi or English. Skip invalid or incomplete questions.
 """
 
-with st.spinner("🧠 Thinking... extracting structured quiz data..."):
+# Combine with extracted text
+prompt = f"{prompt_template}\n\nProcess this input text:\n{extracted_text}"
+
+# -------------------------
+# Step 3: Send to GPT
+# -------------------------
+st.subheader("✨ Converting text to structured quiz format...")
+
+with st.spinner("🤖 Processing with GPT..."):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -113,9 +117,9 @@ with st.spinner("🧠 Thinking... extracting structured quiz data..."):
         st.stop()
 
 # -------------------------
-# Step 3: Parse JSON
+# Step 4: Parse JSON
 # -------------------------
-st.subheader("🧾 Parsing GPT Output")
+st.subheader("🧾 Parsing extracted quiz data...")
 
 try:
     json_start = raw_output.find("[")
@@ -123,7 +127,7 @@ try:
     json_str = raw_output[json_start:json_end]
     quiz_data = json.loads(json_str)
 except Exception:
-    st.error("⚠️ Failed to parse JSON from GPT response.")
+    st.error("⚠️ Failed to parse JSON output. Here’s what GPT returned:")
     st.text(raw_output)
     st.stop()
 
@@ -131,7 +135,7 @@ df = pd.DataFrame(quiz_data)
 st.dataframe(df.head())
 
 # -------------------------
-# Step 4: Save CSV
+# Step 5: Save as CSV
 # -------------------------
 timestamp = time.strftime("%Y%m%d-%H%M%S")
 csv_filename = f"quiz_{timestamp}.csv"
@@ -139,21 +143,27 @@ df.to_csv(csv_filename, index=False)
 st.success(f"✅ CSV file created: {csv_filename}")
 
 # -------------------------
-# Step 5: Upload to GitHub
+# Step 6: Upload to GitHub
 # -------------------------
-st.subheader("🚀 Uploading to GitHub...")
+st.subheader("🚀 Uploading file to GitHub...")
 
 try:
     g = Github(github_token)
     repo = g.get_repo(github_repo)
     with open(csv_filename, "rb") as f:
         content = f.read()
+
+    # Use timestamped file for versioning
+    github_full_path = github_path.replace(".csv", f"_{timestamp}.csv")
+
     repo.create_file(
-        path=f"data/{csv_filename}",
+        path=github_full_path,
         message=f"Add quiz file {csv_filename}",
         content=content,
         branch="master",
     )
-    st.success(f"✅ File uploaded successfully to GitHub → `data/{csv_filename}`")
+
+    st.success(f"✅ Successfully uploaded to GitHub → `{github_full_path}`")
+
 except Exception as e:
-    st.error(f"GitHub Upload Failed: {e}")
+    st.error(f"❌ GitHub Upload Failed: {e}")
