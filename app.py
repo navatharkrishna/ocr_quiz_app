@@ -17,9 +17,9 @@ st.title("📘 Marathi + English PDF Quiz Extractor & GitHub Uploader")
 st.markdown("""
 ### 🧠 What this app does:
 1️⃣ Extracts text from uploaded **PDF** (supports Marathi + English)  
-2️⃣ Auto-corrects Marathi OCR text using GPT  
-3️⃣ Converts to clean **quiz JSON + CSV**  
-4️⃣ Uploads automatically to your **GitHub repo 🚀**
+2️⃣ Corrects Marathi sentences automatically using **GPT**  
+3️⃣ Converts OCR text to structured quiz questions (JSON → CSV)  
+4️⃣ Uploads CSV to your **GitHub repo 🚀**
 """)
 
 # -------------------------
@@ -41,11 +41,11 @@ for proxy_var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https
     os.environ.pop(proxy_var, None)
 
 # -------------------------
-# OpenAI Client (with retries)
+# Safe OpenAI Initialization
 # -------------------------
 def create_openai_client(api_key):
     transport = httpx.HTTPTransport(retries=3)
-    return OpenAI(api_key=api_key, http_client=httpx.Client(transport=transport, timeout=120.0))
+    return OpenAI(api_key=api_key, http_client=httpx.Client(transport=transport, timeout=60.0))
 
 client = create_openai_client(openai_api_key)
 
@@ -58,15 +58,13 @@ if not uploaded_file:
     st.stop()
 
 # -------------------------
-# Step 1: Extract Text (Better accuracy)
+# Step 1: Extract Text
 # -------------------------
-with st.spinner("🔍 Extracting full text from PDF..."):
+with st.spinner("🔍 Extracting text from PDF..."):
     pdf_doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
     extracted_text = ""
     for page in pdf_doc:
-        # Combine both text layers for better accuracy
-        text = page.get_text("text", flags=1 | 2 | 8)  # Extract all available text
-        extracted_text += text.strip() + "\n\n"
+        extracted_text += page.get_text("text") + "\n"
 
 if not extracted_text.strip():
     st.error("❌ No readable text found in the uploaded PDF.")
@@ -75,27 +73,54 @@ if not extracted_text.strip():
 st.text_area("📜 Extracted Text Preview", extracted_text[:1500])
 
 # -------------------------
-# Step 2: Marathi Text Correction
+# Step 2: Marathi Text Correction (Batch-wise)
 # -------------------------
 st.subheader("🪶 Correcting Marathi text using GPT...")
 
-correction_prompt = f"""
-You are a Marathi language expert.
-Given this OCR extracted Marathi text, correct all grammar, spacing, and word recognition errors.
-Do not translate it — just fix the Marathi text.
+def correct_marathi_text_in_batches(text, batch_size=2500):
+    paragraphs = text.split("\n\n")
+    chunks, current, count = [], "", 0
+    for p in paragraphs:
+        current += p + "\n\n"
+        count += len(p)
+        if count > batch_size:
+            chunks.append(current.strip())
+            current, count = "", 0
+    if current:
+        chunks.append(current.strip())
 
-Text:
-{extracted_text}
-"""
+    corrected_chunks = []
+    for i, chunk in enumerate(chunks, start=1):
+        st.write(f"🔹 Processing batch {i}/{len(chunks)}...")
+        prompt = f"""
+        You are a Marathi language expert.
+        Correct grammar, spacing, and OCR errors in the following Marathi text.
+        Do NOT translate; keep it in Marathi.
 
-with st.spinner("✨ Correcting Marathi text..."):
+        Text:
+        {chunk}
+        """
+
+        for attempt in range(2):
+            try:
+                resp = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                )
+                corrected = resp.choices[0].message.content.strip()
+                corrected_chunks.append(corrected)
+                break
+            except Exception as e:
+                if attempt == 1:
+                    st.warning(f"⚠️ Skipped batch {i} due to: {e}")
+                time.sleep(2)
+
+    return "\n\n".join(corrected_chunks)
+
+with st.spinner("✨ Correcting Marathi text in batches..."):
     try:
-        correction_response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": correction_prompt}],
-            temperature=0.3,
-        )
-        corrected_text = correction_response.choices[0].message.content.strip()
+        corrected_text = correct_marathi_text_in_batches(extracted_text)
     except Exception as e:
         st.warning(f"⚠️ Marathi correction failed: {e}. Using raw text instead.")
         corrected_text = extracted_text
@@ -103,10 +128,8 @@ with st.spinner("✨ Correcting Marathi text..."):
 st.text_area("✅ Corrected Text Preview", corrected_text[:1500])
 
 # -------------------------
-# Step 3: Quiz JSON Extraction
+# Step 3: GPT Prompt Template for Quiz
 # -------------------------
-st.subheader("🧩 Extracting structured quiz data...")
-
 prompt_template = """
 You are an AI that converts raw OCR quiz text into structured JSON.
 
@@ -128,9 +151,15 @@ Output ONLY valid JSON array like this:
 Input text may be Marathi or English. Skip invalid or incomplete questions.
 """
 
-prompt = f"{prompt_template}\n\nProcess this corrected text:\n{corrected_text}"
+# Combine with corrected text
+prompt = f"{prompt_template}\n\nProcess this input text:\n{corrected_text}"
 
-with st.spinner("🤖 Extracting quiz questions..."):
+# -------------------------
+# Step 4: Convert to structured quiz using GPT
+# -------------------------
+st.subheader("✨ Converting text to structured quiz format...")
+
+with st.spinner("🤖 Processing with GPT..."):
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -143,7 +172,7 @@ with st.spinner("🤖 Extracting quiz questions..."):
         st.stop()
 
 # -------------------------
-# Step 4: Parse JSON
+# Step 5: Parse JSON
 # -------------------------
 st.subheader("🧾 Parsing extracted quiz data...")
 
@@ -159,19 +188,26 @@ except Exception:
 
 df = pd.DataFrame(quiz_data)
 
-# Remove index column from display
-st.dataframe(df, use_container_width=True, hide_index=True)
+# Remove index column and ensure correct order
+columns = ["question_no", "question", "option1", "option2", "option3", "option4",
+           "correct_answer", "description", "reference"]
+for col in columns:
+    if col not in df.columns:
+        df[col] = ""
+df = df[columns]
+
+st.dataframe(df.head())
 
 # -------------------------
-# Step 5: Save as CSV (no index)
+# Step 6: Save as CSV
 # -------------------------
 timestamp = time.strftime("%Y%m%d-%H%M%S")
 csv_filename = f"quiz_{timestamp}.csv"
-df.to_csv(csv_filename, index=False, encoding="utf-8-sig")
+df.to_csv(csv_filename, index=False)
 st.success(f"✅ CSV file created: {csv_filename}")
 
 # -------------------------
-# Step 6: Upload to GitHub
+# Step 7: Upload to GitHub
 # -------------------------
 st.subheader("🚀 Uploading file to GitHub...")
 
