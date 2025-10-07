@@ -1,5 +1,6 @@
 import streamlit as st
-import fitz  # PyMuPDF
+import pytesseract
+from pdf2image import convert_from_bytes
 from openai import OpenAI
 import pandas as pd
 import json
@@ -8,19 +9,21 @@ import requests
 import base64
 import time
 import re
+from datetime import datetime
 
 # -------------------------
 # Streamlit UI
 # -------------------------
-st.set_page_config(page_title="OCR Quiz Extractor", layout="wide")
-st.title("📘 Marathi + English PDF Quiz Extractor & GitHub Uploader")
+st.set_page_config(page_title="OCR + AI Quiz Extractor", layout="wide")
+st.title("📘 Marathi + English OCR PDF Quiz Extractor & GitHub Uploader")
 
 st.markdown("""
-Upload a **PDF file** (Marathi or English), this app will:
-1. Extract text directly from PDF  
-2. Send text to GPT for cleaning & question formatting  
-3. Generate a CSV file  
-4. Automatically push it to your GitHub repo  
+Upload a **PDF file** (Marathi or English).  
+This app will:
+1. Extract text using **OCR (Tesseract)**  
+2. Use **GPT** to format questions properly  
+3. Generate a **CSV file**  
+4. Automatically **upload it to GitHub** 🚀
 """)
 
 # -------------------------
@@ -38,38 +41,48 @@ except KeyError:
 client = OpenAI(api_key=api_key)
 
 # -------------------------
-# Upload PDF
+# File Upload
 # -------------------------
 uploaded_pdf = st.file_uploader("📄 Upload PDF file", type=["pdf"])
 if uploaded_pdf is None:
     st.stop()
 
+# File setup
 output_dir = "output"
 os.makedirs(output_dir, exist_ok=True)
-text_file_path = os.path.join(output_dir, "pdf_text_output.txt")
-csv_file_path = os.path.join(output_dir, "quiz.csv")
+
+pdf_name = os.path.splitext(uploaded_pdf.name)[0]
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+csv_file_name = f"{pdf_name}_{timestamp}.csv"
+
+text_file_path = os.path.join(output_dir, f"{pdf_name}_text.txt")
+csv_file_path = os.path.join(output_dir, csv_file_name)
 
 # -------------------------
-# Extract text from PDF
+# OCR Text Extraction
 # -------------------------
-st.info("🔍 Extracting text from PDF...")
+st.info("🔍 Extracting text using OCR... (this may take a few moments)")
+
 try:
-    doc = fitz.open(stream=uploaded_pdf.read(), filetype="pdf")
+    images = convert_from_bytes(uploaded_pdf.read())
 except Exception as e:
-    st.error(f"❌ Failed to open PDF: {e}")
+    st.error(f"❌ Could not read PDF for OCR: {e}")
     st.stop()
 
 output_text = ""
-for i, page in enumerate(doc):
-    text = page.get_text()
-    output_text += f"\n--- Page {i+1} ---\n{text if text.strip() else '[No text detected]'}\n"
+for i, img in enumerate(images):
+    st.text(f"📄 Processing page {i+1}/{len(images)} ...")
+    text = pytesseract.image_to_string(img, lang="eng+mar")  # English + Marathi OCR
+    output_text += f"\n--- Page {i+1} ---\n{text}\n"
 
+# Save OCR text
 with open(text_file_path, "w", encoding="utf-8") as f:
     f.write(output_text)
-st.success("✅ Text extraction completed!")
+
+st.success("✅ OCR text extraction completed!")
 
 # -------------------------
-# Split into manageable chunks
+# Split Text into Chunks
 # -------------------------
 max_chunk_size = 1500
 lines = output_text.split("\n")
@@ -87,7 +100,7 @@ if current_chunk.strip():
 # GPT Prompt Template
 # -------------------------
 prompt_template = """
-You are given PDF-extracted quiz questions in Marathi and English.
+You are given OCR-extracted quiz questions in Marathi and English.
 Return ONLY valid JSON, no explanation or extra text.
 
 JSON format:
@@ -109,22 +122,16 @@ JSON format:
 def clean_json_string(raw):
     """Cleans GPT responses into valid JSON arrays"""
     text = raw.strip()
-
-    # Extract only the JSON portion if GPT adds extra commentary
     match = re.search(r"(\[.*\])", text, re.DOTALL)
     if match:
         text = match.group(1)
-
-    # Fix common JSON syntax issues
     text = re.sub(r",\s*]", "]", text)
     text = re.sub(r",\s*}", "}", text)
     text = text.replace("“", "\"").replace("”", "\"").replace("‘", "'").replace("’", "'")
-    text = text.strip()
-
-    return text
+    return text.strip()
 
 # -------------------------
-# Process each chunk with GPT
+# Process OCR text chunks with GPT
 # -------------------------
 formatted_questions = []
 progress = st.progress(0)
@@ -179,13 +186,17 @@ if formatted_questions:
             df[col] = ""
 
     df = df[required_cols]
+
+    # ✅ Save without index
     df.to_csv(csv_file_path, index=False, encoding="utf-8-sig")
 
-    st.success("✅ CSV generated successfully!")
-    st.dataframe(df.head())
+    st.success(f"✅ CSV '{csv_file_name}' generated successfully!")
+
+    # ✅ Display table without index
+    st.dataframe(df.style.hide(axis='index'))
 
     with open(csv_file_path, "rb") as f:
-        st.download_button("📥 Download CSV", f, file_name="quiz.csv", mime="text/csv")
+        st.download_button("📥 Download CSV", f, file_name=csv_file_name, mime="text/csv")
 
     # -------------------------
     # Upload to GitHub
@@ -198,19 +209,20 @@ if formatted_questions:
     # Check if file exists
     r = requests.get(url, headers=headers)
     data = {
-        "message": "Upload quiz.csv via Streamlit PDF app",
+        "message": f"Upload {csv_file_name} via Streamlit OCR app",
         "content": content_bytes,
-        "branch": "master"  # ✅ Use master branch if your repo default is master
+        "branch": "main"  # Change to 'master' if your repo uses that
     }
 
     if r.status_code == 200:
         sha = r.json().get("sha")
         data["sha"] = sha  # update existing file
+
     put_r = requests.put(url, headers=headers, json=data)
 
     if put_r.status_code in [200, 201]:
-        st.success(f"✅ CSV uploaded to GitHub: https://github.com/{repo_name}/blob/master/{github_path}")
+        st.success(f"✅ CSV uploaded to GitHub: https://github.com/{repo_name}/blob/main/{github_path}")
     else:
         st.error(f"❌ GitHub upload failed! {put_r.status_code}: {put_r.text}")
 else:
-    st.error("❌ No valid data generated. Check extracted text.")
+    st.error("❌ No valid data generated. Check OCR extraction or GPT output.")
